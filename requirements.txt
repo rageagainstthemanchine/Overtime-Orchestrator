@@ -1,0 +1,4 @@
+holidays
+icalendar
+python-dotenv
+slack_sdk
