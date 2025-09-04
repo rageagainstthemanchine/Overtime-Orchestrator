@@ -4,8 +4,8 @@ Rich evidence-based estimation of overtime using multiple activity sources:
 
 * Git commits (author email filtered)
 * Bitbucket merged PRs (optional)
-* Google Calendar events (CSV legacy or ICS modern export) with smart exclusions
-* Slack messages (optional) with caching, concurrency & robust retry
+* Google Calendar events (ICS export only) with smart exclusions
+* Slack messages (optional) via search API with per-user caching
 * Automatic lunch-break penalty if no uninterrupted 60‑minute gap during defined work windows
 
 > Goal: Provide auditable evidence of activity outside normal working hours.
@@ -35,8 +35,8 @@ Rich evidence-based estimation of overtime using multiple activity sources:
 | ------ | --------------- | ----- |
 | git commits | Author email ∈ `MY_EMAILS`, subject not matching exclusion regex | Each commit timestamp clustered into sessions |
 | Bitbucket PRs (merged) | If credentials + workspace + repos configured | Uses `updated_on` for merged PRs |
-| Calendar events | From CSV or ICS; excluded if title in exclusion list; skips all‑day | Title stored as "Meeting: …" |
-| Slack messages | If `USE_SLACK=true`; user id ∈ `SLACK_USER_IDS`; no subtype | Channel allow/deny via env; caching accelerates reruns |
+| Calendar events | From ICS only; excluded if title in exclusion list; skips all‑day | Title stored as "Meeting: …" |
+| Slack messages | If `USE_SLACK=true`; user id ∈ `SLACK_USER_IDS`; via search API | Per-user caching accelerates reruns |
 
 ### Session Clustering
 Commit/PR/Slack timestamps are clustered if gaps ≤ 45 minutes. Each session is padded (default: -10 min before, +15 min after) to approximate setup/cleanup/context switching.
@@ -54,38 +54,44 @@ Public holidays (via `holidays` library) plus explicit PTO dates are treated as 
 
 ---
 ## Slack Integration Details
+This simplified version uses Slack's search API to find messages by specific users.
+
 Features:
-* Channel discovery across public/private channels, IMs and group DMs (subject to token scopes).
-* Concurrency: Parallel channel history fetch using a thread pool (`SLACK_CONCURRENCY`).
-* Incremental Caching: Per‑channel JSON cache in `.slack_cache/CHANNELID.json` storing:
+* Search-based message collection using `search.messages` API
+* Per-user caching in `.slack_cache/search_user_USERID.json` storing:
   - `raw_messages`
   - `covered_since` / `covered_until` (UNIX epoch float bounds)
   - `last_fetched`
-* Smart Range Filling: Only missing older/newer slices within the analysis window are fetched; previously covered spans reused.
+  - `mode: 'search'`
+* Date-sliced queries (14-day chunks) to handle large date ranges
 * Robust Retry & Rate Limit Handling:
   - Exponential backoff with jitter for generic failures (1,2,4,8,16,30s cap + random 0–0.5s)
   - Honors Slack `ratelimited` errors using `Retry-After` header plus jitter
   - Resets attempt counter after each successful page
 
-Recommended Slack Bot Scopes (minimal example – adapt as needed):
-`channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`.
+Required Slack Bot Scopes:
+`channels:history`, `channels:read`,
+`groups:history`, `groups:read`,
+`im:history`, `im:read`,
+`mpim:history`, `mpim:read`,
+`search:messages`, `search:read`, `search:read.files`, `search:read.im`, `search:read.mpim`, `search:read.private`, `search:read.public`, `search:read.users`,
+`users:read`.
 
 Security: Token only read from environment. Caches are local JSON. Avoid committing `.slack_cache/`.
 
 ---
-## Calendar (CSV & ICS)
-* CSV: Legacy Google export (`Start Date`, `Start Time`, `End Date`, `End Time`, `Subject`). Supports 12h & 24h formats tried sequentially.
-* ICS: Parsed using `icalendar`. Skips all‑day events (date objects) and excluded titles.
-* Exclusion list (case-insensitive, configurable in code) defaults to: `Out of office`, `PTO`, `OOO`.
+## Calendar (ICS Only)
+* ICS: Parsed using `icalendar` library. Skips all‑day events (date objects) and excluded titles.
+* Exclusion list (case-insensitive, configurable via `EXCLUDED_CALENDAR_TITLES` env var) defaults to: `Out of office`, `PTO`, `OOO`.
+* Note: CSV support has been removed in this simplified version.
 
 ---
 ## Output Files
 ### `extra_commits.csv`
-Columns: date, time, weekday, source, repo_or_channel, detail, outside_work (quick heuristic; final computation happens separately).
+Columns: date, time, weekday, source, repo_or_channel, detail
 
 ### `extra_summary.csv`
-Columns: date, weekday, hours_extra_estimated, evidence_count (currently placeholder), examples (up to 5 sample notes including lunch penalty note if applied).
-> NOTE: `evidence_count` may be enhanced later to reflect number of raw evidence items contributing to that day’s calculation.
+Columns: date, weekday, hours_extra_estimated, examples (up to 5 sample notes including lunch penalty note if applied)
 
 ---
 ## Environment Variables
@@ -93,9 +99,9 @@ Provide these in `.env` (loaded automatically by `python-dotenv`). Lists show de
 
 ### Core
 * `MY_EMAILS` – Comma-separated commit author emails to include. If empty, git evidence is skipped entirely.
-* `LOCAL_TZ` – IANA timezone (default `America/Sao_Paulo`).
-* `HOLIDAYS_COUNTRY` – e.g. `BR`.
-* `HOLIDAYS_PROV` – Subdivision / state (e.g. `DF`).
+* `LOCAL_TZ` – IANA timezone (default `America/New_York`).
+* `HOLIDAYS_COUNTRY` – Country code (default `US`).
+* `HOLIDAYS_PROV` – Subdivision / state (default `NY`).
 
 ### Date & Scope (set in code but can be edited directly in script)
 * `SINCE`, `UNTIL` – Analysis bounds (ISO date strings) – currently defined in code constants.
@@ -107,26 +113,21 @@ Provide these in `.env` (loaded automatically by `python-dotenv`). Lists show de
 * Additional constants: `BITBUCKET_WORKSPACE`, `BITBUCKET_REPO_SLUGS` (edit in code).
 
 ### Google Calendar
-* `GOOGLE_CALENDAR_ICS` – Path to exported `.ics` file. (If using CSV instead, set `GOOGLE_CALENDAR_CSV` constant in code.)
+* `GOOGLE_CALENDAR_ICS` – Path to exported `.ics` file.
 
 ### Slack
 * `USE_SLACK` – `true|false` (default false)
 * `SLACK_BOT_TOKEN` – Bot/User token (xoxb...)
 * `SLACK_USER_IDS` – Only messages from these users counted (comma-separated user IDs)
-* `SLACK_CHANNEL_IDS` – Optional allowlist (IDs). If empty -> all accessible channels considered.
-* `SLACK_EXCLUDE_CHANNEL_IDS` – Optional denylist (IDs)
-* `SLACK_MAX_CHANNELS` – Safety cap (default 300)
-* `SLACK_PAGE_LIMIT` – Messages per history page (default 100)
-* `SLACK_CONCURRENCY` – Thread pool size for channel fetches (default 6)
 * `SLACK_CACHE_ENABLED` – Enable local JSON caching (default true)
+* `SLACK_FORCE_REFRESH` – Ignore existing cache and fetch fresh (default false)
 * `SLACK_CACHE_DIR` – Directory for cache files (default `.slack_cache`)
 
-### Other (code constants)
-* `WORK_START`, `WORK_END` – Simpler hour-based outside_work field (legacy heuristic) separate from shift windows.
-* `SHIFT_WINDOWS` – Detailed per-weekday working intervals for precise calculation.
-* `WEEKENDS_COUNT_AS_EXTRA` – If true, weekends have no work windows (all counts).
-* `PTO_DAYS_STR` – Hard-coded PTO ISO dates treated like holidays.
-* `EXCLUDED_CALENDAR_TITLES` – List of meeting subjects to ignore (lowercased at runtime).
+### Other (code constants and env vars)
+* `SHIFT_WINDOWS` – Detailed per-weekday working intervals for precise calculation (9am-6pm Mon-Fri by default).
+* `WEEKENDS_COUNT_AS_EXTRA` – If true, weekends have no work windows (default true).
+* `PTO_DAYS_STR` – Hard-coded PTO ISO dates treated like holidays (comma-separated).
+* `EXCLUDED_CALENDAR_TITLES` – Meeting subjects to ignore (comma-separated, default "Out of office,PTO,OOO").
 
 ---
 ## Algorithms & Logic
@@ -151,7 +152,7 @@ Edge Handling:
 * Unit tests for interval arithmetic & lunch detection.
 * Configurable lunch duration & required gap.
 * Web dashboard or notebook visualization.
-* Cache audit improvements (see `slack_cache_audit.py`).
+* Enhanced cache management and audit tools.
 
 ---
 ## Limitations
@@ -166,10 +167,10 @@ Edge Handling:
 | ------- | ----- | ------ |
 | 0 commits collected | `MY_EMAILS` empty or mismatch | Confirm emails & case | 
 | Slack messages missing | Missing scopes or user IDs | Add required scopes & check `SLACK_USER_IDS` |
-| Slow Slack fetch | Large channel set | Narrow allowlist / raise concurrency (cautiously) |
+| Slow Slack fetch | Large date range or many users | Use `SLACK_FORCE_REFRESH=false` to leverage cache |
 | Rate limit delays | High volume fetch | Allow backoff to proceed; rerun uses cache |
 | Calendar empty | Wrong path or missing `icalendar` lib | Verify `GOOGLE_CALENDAR_ICS` & dependency |
-| Suspect duplicate Slack msgs | Cache merge anomaly | Run: `python slack_cache_audit.py --since 2024-05-01 --until 2025-08-30` |
+| Slack search errors | Missing search scopes | Ensure bot has `search:read` scope |
 
 ---
 ## Data Privacy
@@ -177,7 +178,7 @@ All processing is local. Only your network calls are to Bitbucket & Slack APIs y
 
 ---
 ## License
-No explicit license provided; treat as internal script unless a license file is added.
+MIT License - see LICENSE file for details.
 
 ---
 ## Changelog (High-Level)
