@@ -27,6 +27,7 @@ Rich evidence-based estimation of overtime using multiple activity sources:
 7. Inspect outputs:
 	* `extra_commits.csv` – granular evidence rows
 	* `extra_summary.csv` – per‑day overtime aggregation & sample notes
+	* Console output now ends with aggregate total overtime hours (e.g. `Total overtime: 42.75 hours (42:45)`).
 
 ---
 ## Core Concepts
@@ -42,7 +43,7 @@ Rich evidence-based estimation of overtime using multiple activity sources:
 Commit/PR/Slack timestamps are clustered if gaps ≤ 45 minutes. Each session is padded (default: -10 min before, +15 min after) to approximate setup/cleanup/context switching.
 
 ### Outside‑Work Determination
-* Work windows defined per weekday via `SHIFT_WINDOWS` (or empty meaning full day counts as outside if weekend/holiday and configured so).
+* Work windows defined per weekday via environment-driven configuration (`WORK_HOURS` + optional per-day `WORK_HOURS_MON` .. `WORK_HOURS_SUN`) which builds an internal `SHIFT_WINDOWS` mapping at runtime.
 * For each session interval we intersect with the complement (outside) of that day’s work windows.
 * Calendar events contribute only their portions that fall outside work windows (precise intersection).
 
@@ -124,8 +125,9 @@ Provide these in `.env` (loaded automatically by `python-dotenv`). Lists show de
 * `SLACK_CACHE_DIR` – Directory for cache files (default `.slack_cache`)
 
 ### Other (code constants and env vars)
-* `SHIFT_WINDOWS` – Detailed per-weekday working intervals for precise calculation (9am-6pm Mon-Fri by default).
-* `WEEKENDS_COUNT_AS_EXTRA` – If true, weekends have no work windows (default true).
+* `WORK_HOURS` – Default interval list applied to weekdays not explicitly overridden (default `09:00-18:00`). Multiple intervals: `09:00-12:00,13:00-17:30`.
+* `WORK_HOURS_MON` .. `WORK_HOURS_SUN` – Per-day overrides (same format). If unset, inherit `WORK_HOURS` default.
+* `WEEKENDS_COUNT_AS_EXTRA` – If true (default), weekends have no work windows (regardless of overrides). Set `false` to allow weekend intervals.
 * `PTO_DAYS_STR` – Hard-coded PTO ISO dates treated like holidays (comma-separated).
 * `EXCLUDED_CALENDAR_TITLES` – Meeting subjects to ignore (comma-separated, default "Out of office,PTO,OOO").
 
@@ -191,6 +193,7 @@ MIT License - see LICENSE file for details.
 * Added: Slack caching with partial coverage merging
 * Added: Exponential backoff + jitter w/ reset on success
 * Added: Lunch break penalty (+60m when no 1h gap)
+* Added: Environment-configurable working hours (`WORK_HOURS`, per-day overrides, weekend suppression)
 
 ---
 ## Disclaimer

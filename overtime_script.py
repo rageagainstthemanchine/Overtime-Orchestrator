@@ -32,7 +32,7 @@ Environment variables (load from .env if present):
   LOCAL_TZ=America/Sao_Paulo (default)
   HOLIDAYS_COUNTRY=BR  HOLIDAYS_PROV=DF
 
-Run: python simplifield_overtime_script.py
+Run: python overtime_script.py
 """
 import os
 from dotenv import load_dotenv
@@ -88,17 +88,51 @@ LOCAL_TZ = os.getenv("LOCAL_TZ", "America/New_York")
 MY_EMAILS = {e.strip().lower() for e in os.getenv("MY_EMAILS", "").split(",") if e.strip()}
 EXCLUDE_COMMIT_MSG_RE = re.compile(r"\b(merge pull request|dependabot|bump version|chore:?)\b", re.I)
 
-# Work schedule windows per weekday (0=Mon .. 6=Sun)
-WEEKENDS_COUNT_AS_EXTRA = True
-SHIFT_WINDOWS = {
-    0: [(time(9,0), time(18,0))],
-    1: [(time(9,0), time(18,0))],
-    2: [(time(9,0), time(18,0))],
-    3: [(time(9,0), time(18,0))],
-    4: [(time(9,0), time(18,0))],
-    5: [] if WEEKENDS_COUNT_AS_EXTRA else [(time(9,0), time(18,0))],
-    6: [] if WEEKENDS_COUNT_AS_EXTRA else [(time(9,0), time(18,0))],
-}
+# Work schedule windows per weekday (0=Mon .. 6=Sun) now configurable via env vars.
+# Environment variables:
+#   WORK_HOURS (default "09:00-18:00") general default interval list.
+#   WORK_HOURS_MON .. WORK_HOURS_SUN to override specific days (comma-separated intervals "HH:MM-HH:MM").
+#   WEEKENDS_COUNT_AS_EXTRA=true|false (default true) – if true, weekends have no work windows regardless of overrides.
+#   Example: WORK_HOURS_MON="09:00-12:00,13:00-17:30"
+
+def _parse_work_intervals(spec: str):
+    intervals = []
+    if not spec:
+        return intervals
+    for part in spec.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' not in part:
+            continue
+        a,b = part.split('-',1)
+        try:
+            ah, am = [int(x) for x in a.split(':')]
+            bh, bm = [int(x) for x in b.split(':')]
+            ta = time(ah, am)
+            tb = time(bh, bm)
+            if ta < tb:
+                intervals.append((ta, tb))
+        except Exception:
+            continue
+    return intervals
+
+WEEKENDS_COUNT_AS_EXTRA = os.getenv("WEEKENDS_COUNT_AS_EXTRA", "true").lower() in ("1","true","yes")
+_default_hours_spec = os.getenv("WORK_HOURS", os.getenv("WORK_HOURS_DEFAULT", "09:00-18:00"))
+_default_intervals = _parse_work_intervals(_default_hours_spec) or [(time(9,0), time(18,0))]
+
+_per_day_env_names = [
+    "WORK_HOURS_MON","WORK_HOURS_TUE","WORK_HOURS_WED","WORK_HOURS_THU","WORK_HOURS_FRI","WORK_HOURS_SAT","WORK_HOURS_SUN"
+]
+SHIFT_WINDOWS = {}
+for idx, env_name in enumerate(_per_day_env_names):
+    spec = os.getenv(env_name, '').strip()
+    intervals = _parse_work_intervals(spec) if spec else list(_default_intervals)
+    SHIFT_WINDOWS[idx] = intervals
+
+if WEEKENDS_COUNT_AS_EXTRA:
+    SHIFT_WINDOWS[5] = []
+    SHIFT_WINDOWS[6] = []
 
 HOLIDAYS_COUNTRY = os.getenv("HOLIDAYS_COUNTRY", "US")
 HOLIDAYS_PROV = os.getenv("HOLIDAYS_PROV", "NY")
@@ -654,7 +688,11 @@ def main():
             d = datetime.fromisoformat(day)
             mins = per_day[day]['minutes']
             w.writerow([day, d.strftime('%a'), f"{mins/60:.2f}", "; ".join(per_day[day]['notes'][:5])])
-
+    total_minutes = sum(v['minutes'] for v in per_day.values())
+    total_hours = total_minutes / 60.0 if total_minutes else 0.0
+    hh = int(total_minutes // 60)
+    mm = int(total_minutes % 60)
+    print(f"Total overtime: {total_hours:.2f} hours ({hh:02d}:{mm:02d})")
     print(f"Done -> {OUT_COMMITS_CSV}, {OUT_SUMMARY_CSV}")
 
 if __name__ == '__main__':
